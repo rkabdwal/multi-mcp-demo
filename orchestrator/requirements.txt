@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+langchain
+langchain-openai
+langchain-mcp-adapters
+langgraph
+httpx
+azure-identity
+azure-storage-queue 
