@@ -36,30 +36,38 @@ The following diagram illustrates the complete, end-to-end flow of a user query 
 ```mermaid
 sequenceDiagram
     participant User as 👨‍💻 User
-    participant UI as 🌐 UI (Client App)
+    participant UI as 🌐 UI
     participant Orchestrator as 🧠 Orchestrator Agent
     participant SQL_Server as ⚙️ SQL MCP Server
+    participant Azure_Server as ☁️ Azure MCP (stdio)
     participant DB as 🗄️ SQL Database
 
     User->>+UI: Submits natural language prompt
     UI->>+Orchestrator: POST /api/prompt (with auth token)
     
-    Orchestrator->>+SQL_Server: 1. `initialize` request
-    SQL_Server-->>-Orchestrator: 200 OK (Confirms protocol version)
+    Orchestrator->>+SQL_Server: `initialize` & `tools/list`
+    SQL_Server-->>-Orchestrator: 200 OK
+    Orchestrator->>+Azure_Server: `initialize` & `tools/list`
+    Azure_Server-->>-Orchestrator: 200 OK
     
-    Orchestrator->>+SQL_Server: 2. `tools/list` request
-    SQL_Server-->>-Orchestrator: 200 OK (Returns list of available tools)
+    Note over Orchestrator: Handshake & Discovery Complete for ALL servers
     
-    Note over Orchestrator, SQL_Server: Handshake & Discovery Complete
+    Orchestrator->>Orchestrator: **Agent Reasoning:** LLM analyzes prompt and decides which tool to use
     
-    Orchestrator->>Orchestrator: **Agent Reasoning:** LLM decides to use 'text_to_sql_adventureworks' tool
-    
-    Orchestrator->>+SQL_Server: 3. `tools/call` request (with user prompt)
-    SQL_Server->>SQL_Server: **Text-to-SQL Chain:**<br/>1. Gets table list (cached)<br/>2. LLM selects relevant tables<br/>3. Gets focused schema<br/>4. LLM generates final SQL query
-    SQL_Server->>SQL_Server: **Sanitize & Execute:**<br/>1. Validates SQL is a safe SELECT<br/>2. Executes query against DB
-    DB-->>SQL_Server: Returns raw data rows
-    SQL_Server->>SQL_Server: **make_serializable():**<br/>Converts special data types (Decimal, datetime)
-    SQL_Server-->>-Orchestrator: **200 OK** with JSON-RPC response containing results
+    alt Database Query Path
+        Note over Orchestrator: User asks: "Top 5 products?"
+        Orchestrator->>+SQL_Server: **`tools/call`** request (for 'text_to_sql_adventureworks')
+        SQL_Server->>SQL_Server: **Text-to-SQL Chain:**<br/>Generates and validates SQL query
+        SQL_Server->>DB: Executes safe SELECT query
+        DB-->>SQL_Server: Returns raw data rows
+        SQL_Server->>SQL_Server: **make_serializable():**<br/>Converts special data types
+        SQL_Server-->>-Orchestrator: **200 OK** with JSON-RPC response containing results
+    else Azure Cloud Query Path
+        Note over Orchestrator: User asks: "List my resource groups"
+        Orchestrator->>+Azure_Server: **`tools/call`** request (for 'azure_list_resource_groups')
+        Note over Azure_Server: Subprocess uses local `az login` credentials to call Azure API.
+        Azure_Server-->>-Orchestrator: **200 OK** with JSON-RPC response containing results
+    end
     
     Orchestrator->>Orchestrator: **Agent Synthesis:**<br/>LLM crafts final human-readable answer from tool results
     Orchestrator-->>-UI: 200 OK with final JSON answer
