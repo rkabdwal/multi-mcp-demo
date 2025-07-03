@@ -7,22 +7,6 @@ The architecture uses a **LangGraph-based agent** as the central orchestrator, w
 1. A **custom-built Text-to-SQL MCP server** that connects to a SQL database (AdventureWorksLT2019).
 2. A seamless integration with the official **Azure MCP server**, demonstrating multi-transport (`http` and `stdio`) capabilities.
 
-## Architectural Overview
-
-This solution is following a phased architectural approach i.e. Transition to Target, inspired by **TOGAF**.
-
-### The Transition Architecture (What's in this Repo)
-
-This repository provides the complete code for a functioning **Transition Architecture**. It is a fully debugged and protocol-compliant implementation that proves the core logic and integrations work as designed. It's intended to be a tangible starting point for developers to explore and extend.
-
-### The Target Architecture (The Production Vision)
-
-The design is forward-looking, with a clear path to a **Target Architecture** on Microsoft Azure. This production blueprint incorporates enterprise-grade security, governance, and automation, including:
-
-- **Zero-Trust Security** with Microsoft Entra ID and Azure Virtual Networks.
-- **Human-in-the-Loop (HITL)** verification workflows for critical queries.
-- **Automated CI/CD** pipelines for reliable, repeatable deployments.
-
 ## Repository Contents
 
 This repository is being used for both local development and cloud deployment.
@@ -31,7 +15,7 @@ This repository is being used for both local development and cloud deployment.
 
 ## The User Journey: A Detailed Sequence
 
-The following diagram illustrates the complete, end-to-end flow of a user query that requires fetching data from the custom SQL MCP server. It shows the successful handshake, the agent's reasoning, the server-side processing, and the final response synthesis.
+The following diagram illustrates the complete, end-to-end flow of a user query. It shows how the agent's reasoning determines which MCP server (the custom SQL server or the `stdio`-based Azure server) to call.
 
 ```mermaid
 sequenceDiagram
