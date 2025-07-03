@@ -28,9 +28,6 @@ The design is forward-looking, with a clear path to a **Target Architecture** on
 This repository is being used for both local development and cloud deployment.
 
 - **`/orchestrator` & `/local_mcp_server`:** These directories contain the source code for the two core microservices.
-- **Deployment Assets:** The repository also includes production-ready assets that are not used in the local setup but are essential for a cloud deployment:
-  - **`Dockerfile`** in each service directory for containerizing the applications.
-  - **`.github/workflows/deploy.yml`** which defines a complete CI/CD pipeline using GitHub Actions to automatically build the container images and deploy them to Azure.
 
 ## The User Journey: A Detailed Sequence
 
