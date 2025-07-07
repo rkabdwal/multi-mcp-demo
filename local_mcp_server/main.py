@@ -17,7 +17,8 @@ from decimal import Decimal
 from datetime import datetime, date
 
 from mcp.server.fastmcp import FastMCP
-from mcp.error import JSONRPCError
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -34,7 +35,6 @@ logger = logging.getLogger("local_mcp_server")
 load_dotenv()
 EXPECTED_TOKEN = os.getenv("MCP_SERVER_AUTH_TOKEN")
 
-app = FastAPI(title="Local AdventureWorks MCP Server")
 security = HTTPBearer()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -45,9 +45,8 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 mcp = FastMCP(
     title="AdventureWorks Server",
     version="1.0.0",
-    auth_provider=None  
+    auth_provider=security  
 )
-
 
 # --- Caching for Table Names ---
 TableCache = namedtuple("TableCache", ["tables_str", "timestamp"])
@@ -118,54 +117,34 @@ def sanitize_sql(sql_query: str):
     if any(keyword in sql_query.upper() for keyword in blocked_keywords): raise ValueError("Query contains a blocked keyword.")
     return sql_query
 
-
-
-# ---1. Formal MCP Resource Definition ---
+# ---1. Resource ---
 @mcp.resource(
-    name="db:schema/adventureworks",
-    description="Provides the table and column schema for the AdventureWorksLT2019 database.",
-    input_schema={
-        "type":"object",
-        "properties": { 
-            "table_names_str":{
-                "type":"string", 
-                "description": "Comma-separated list of fully-qualified tables"
-            } 
-        },
-        "required":["table_names_str"]       
-    }
+    uri="db:schema/adventureworks",
+    description="Provides the table and column schema for the AdventureWorksLT2019 database."
 )
-def get_database_schema_resource(table_names_str: Optional[str] = None) -> str:
+def get_database_schema_resource():
     """
     Exposes the database schema as a formal MCP resource.
-    Can be called with a specific list of tables or will fetch all.
+    Returns a callable lambda
     """
     logger.info("MCP resource 'db:schema/adventureworks' requested.")
-    if table_names_str:
-        return get_focused_schema(table_names_str)
-    else:
-        # For a general request, we might return a summary or the full schema
-        all_tables = get_all_table_names()
-        return get_focused_schema(all_tables)
+    return lambda request: get_focused_schema(get_all_table_names())
 
-# --- 2. Formal MCP Prompt Template Definition ---
+# --- 2. Prompt ---
+class SqlGenPromptInput(BaseModel):
+    question: str
+    db_schema: str
+
 @mcp.prompt(
     name="generate_sql_from_schema",
-    description="Prompt to generate an SQL query given a question and schema.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "question": {"type": "string", "description": "The natural language question to answer"},
-            "schema": {"type": "string", "description": "Database schema to use for context."}
-        },
-        "required": ["question", "schema"]
-    }
+    description="Prompt to generate an SQL query given a question and schema."
 )
-def get_sql_generation_prompt(question: str, schema: str) -> List[Dict[str, Any]]:
+def get_sql_generation_prompt(request: SqlGenPromptInput) -> List[Dict[str, Any]]:
     """
-    Returns a structured prompt conversation for the LLM.
+    Returns a structured prompt template for the LLM.
     """
     logger.info("MCP prompt 'generate_sql_from_schema' requested.")
+    # The lambda will be called by MCP with validated input (question, schema)
     return [
         {
             "role": "system",
@@ -173,58 +152,41 @@ def get_sql_generation_prompt(question: str, schema: str) -> List[Dict[str, Any]
             You are an expert SQL Server AI assistant. Your primary task is to write a single, valid SQL query to answer the user's question, based on the provided schema.
 
             **CRITICAL INSTRUCTIONS:**
-            1. Your response MUST contain only the raw SQL query, and nothing else.
+            1. Your response MUST contain only the raw SQL query, and nothing else. Do not wrap it in markdown or add explanations.
             2. You MUST select not only the columns that directly answer the question, but also any other relevant columns that provide context (such as names, descriptions, or prices).
             """
         },
         {
             "role": "user",
-            "content": f"Schema:\n{schema}\n\nUser Question: \"{question}\""
+            "content": f"Schema:\n{request.db_schema}\n\nUser Question: \"{request.question}\""
         }
     ]
 
-# --- REVISED: The `tools/call` handler now uses these primitives ---
+# --- 3. Tool ---
+class ExecuteSqlInput(BaseModel):
+    sql_query: str
+
 @mcp.tool(
-    name="text_to_sql_adventureworks",
-    description="Executes a natural language query against the AdventureWorks database.",
-    input_schema={"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}
+    name="execute_sql_adventureworks",
+    description="Executes a sanitized SELECT query against the AdventureWorks database."
 )
-async def text_to_sql_tool(prompt: str) -> List[Dict[str, Any]]:
-    """
-    This is the action the agent can invoke. In a fully compliant model,
-    this tool would internally use the 'resource' and 'prompt' primitives.
-    """
-    logger.info(f"Executing tool 'text_to_sql_adventureworks' for prompt: '{prompt[:50]}...'")
+async def execute_sql_tool(request: ExecuteSqlInput) -> List[Dict[str, Any]]:
+    """This tool executes a SQL query and returns the result."""
+    logger.info(f"Executing tool 'execute_sql_adventureworks' with query: '{request.sql_query[:60]}...'")
     try:
-        # For demonstration, we use the direct chain here. A more decoupled tool
-        # would first make a call to read the 'db:schema/adventureworks_all' resource.
-        schema = get_focused_schema(get_all_table_names())
-        
-        # Then it would use the 'generate_sql_from_schema_and_question' prompt
-        sql_generation_prompt_template = ChatPromptTemplate.from_messages(get_sql_generation_prompt(prompt, schema))
-        sql_generation_chain = sql_generation_prompt_template | sql_llm | StrOutputParser()
-
-        llm_response_text = await sql_generation_chain.ainvoke({})
-        
-        sql_match = re.search(r"```(sql)?\s*(.*?)\s*```", llm_response_text, re.DOTALL | re.IGNORECASE)
-        sql_query = sql_match.group(2).strip() if sql_match else llm_response_text.strip()
-        logger.info(f"Extracted SQL for execution: {sql_query}")
-
-        safe_sql = sanitize_sql(sql_query)
+        safe_sql = sanitize_sql(request.sql_query)
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(safe_sql)
         columns = [c[0] for c in cursor.description]
         results = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        cursor.close(); conn.close()
+        cursor.close()
+        conn.close()
         
-        # The tool directly returns the final, serializable result.
-        # The FastMCP library handles wrapping this in the correct JSON-RPC response.
         return make_serializable(results)
     except ValueError as ve:
-        raise JSONRPCError(code=400, message=str(ve))
+        raise McpError(ErrorData(code=-32602, message=str(ve)))
     except Exception as e:
-        logger.exception(e)
-        raise JSONRPCError(code=500, message="Internal server error")
-    
-app.include_router(mcp.router, dependencies=[Depends(verify_token)])
+        logger.exception("Unexpected error in tool")
+        raise McpError(ErrorData(code=-32603, message="Internal server error"))
+        
